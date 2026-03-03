@@ -33,6 +33,7 @@ source venv/bin/activate        # Mac/Linux
 # venv\Scripts\activate         # Windows
 
 pip install -r requirements.txt
+> **Windows users:** Also run `pip install tf-keras`
 ```
 
 > ⚠️ First install downloads TensorFlow (~500MB) + model weights (~600MB).  

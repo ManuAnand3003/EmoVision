@@ -27,6 +27,7 @@ pandas>=2.2.0
 scikit-learn>=1.4.0
 matplotlib>=3.8.0
 seaborn>=0.13.0
+tf-keras>=2.18.0
 
 # ── Kaggle (for downloading datasets) ────────────────────────────────────
 kaggle>=1.6.0                 # pip install kaggle; needs ~/.kaggle/kaggle.json
