@@ -1,5 +1,5 @@
-"""
-EmoVision — AI Face Emotion Detection System
+﻿"""
+EmoVision â€” AI Face Emotion Detection System
 Backend: FastAPI + WebSockets + DeepFace + Custom Model
 """
 
@@ -20,7 +20,7 @@ from PIL import Image
 
 from engine.pipeline import EmotionPipeline
 
-# ─── App Setup ────────────────────────────────────────────────────────────────
+# â”€â”€â”€ App Setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app = FastAPI(
     title="EmoVision API",
     description="Real-time face emotion detection powered by deep learning",
@@ -37,16 +37,16 @@ app.add_middleware(
 # Mount static files (our frontend)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# ─── Load ML Pipeline (once at startup) ───────────────────────────────────────
+# â”€â”€â”€ Load ML Pipeline (once at startup) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 pipeline = EmotionPipeline()
 
 
-# ─── Routes ───────────────────────────────────────────────────────────────────
+# â”€â”€â”€ Routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.get("/", response_class=HTMLResponse)
 async def serve_frontend():
     """Serve the main frontend SPA."""
     html_path = Path("static/index.html")
-    return HTMLResponse(content=html_path.read_text(), status_code=200)
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"), status_code=200)
 
 
 @app.post("/api/analyze")
@@ -102,8 +102,8 @@ async def websocket_stream(websocket: WebSocket):
     Client sends base64 JPEG frames, server responds with JSON results.
 
     Protocol:
-      Client → Server: base64 encoded JPEG string
-      Server → Client: JSON { faces: [...], inference_ms: float, fps: float }
+      Client â†’ Server: base64 encoded JPEG string
+      Server â†’ Client: JSON { faces: [...], inference_ms: float, fps: float }
     """
     await websocket.accept()
     frame_times = []
@@ -115,7 +115,7 @@ async def websocket_stream(websocket: WebSocket):
 
             frame_start = time.perf_counter()
 
-            # Decode base64 → OpenCV image
+            # Decode base64 â†’ OpenCV image
             if data.startswith("data:image"):
                 data = data.split(",", 1)[1]
 
@@ -158,7 +158,8 @@ async def health():
     }
 
 
-# ─── Entry point ──────────────────────────────────────────────────────────────
+# â”€â”€â”€ Entry point â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+
