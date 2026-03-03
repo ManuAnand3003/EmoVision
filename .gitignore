@@ -1,37 +1,15 @@
-# Virtual Environment
 venv/
 .venv/
-env/
-
-# Python cache
 __pycache__/
 *.py[cod]
-*.pyo
-*.pyd
-.Python
-
-# DeepFace model weights (auto-downloaded)
 .deepface/
-
-# ML model files (large)
 models/*.pth
 models/*.onnx
 models/*.h5
-
-# Training data (download separately)
 data/
-
-# Logs & temp
 *.log
-*.tmp
-
-# OS files
 .DS_Store
 Thumbs.db
-
-# IDE
 .vscode/
 .idea/
-
-# Environment variables
 .env
