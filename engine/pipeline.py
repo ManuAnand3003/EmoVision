@@ -123,8 +123,8 @@ class EmotionPipeline:
                 raw_emotions = face.get("emotion", {})
 
                 # Normalize scores to 0-1 (DeepFace returns percentages 0-100)
-                total = sum(raw_emotions.values()) or 1
-                emotions = {k.lower(): round(v / total, 4) for k, v in raw_emotions.items()}
+                total = float(sum(raw_emotions.values())) or 1.0
+                emotions = {k.lower(): round(float(v) / total, 4) for k, v in raw_emotions.items()}
 
                 dominant = face.get("dominant_emotion", max(emotions, key=emotions.get))
                 confidence = emotions.get(dominant, 0)
@@ -132,14 +132,14 @@ class EmotionPipeline:
                 results.append({
                     "face_id": i,
                     "box": {
-                        "x": region.get("x", 0),
-                        "y": region.get("y", 0),
-                        "w": region.get("w", 0),
-                        "h": region.get("h", 0),
+                        "x": int(region.get("x", 0)),
+                        "y": int(region.get("y", 0)),
+                        "w": int(region.get("w", 0)),
+                        "h": int(region.get("h", 0)),
                     },
                     "emotions": emotions,
-                    "dominant_emotion": dominant,
-                    "confidence": round(confidence, 4),
+                    "dominant_emotion": str(dominant),
+                    "confidence": round(float(confidence), 4),
                     "color_hex": self._face_color_hex(i),
                 })
 
