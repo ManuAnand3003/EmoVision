@@ -40,7 +40,8 @@ FACE_COLORS_HEX = ["#00ffc8", "#ff6432", "#9632ff", "#32ff96", "#ff3296"]
 # ── Tuneable knobs ─────────────────────────────────────────────────────────
 SMOOTH_WINDOW     = 5      # frames to average (raise for smoother, lower for faster response)
 CONFIDENCE_GATE   = 0.40   # hide label if top emotion < this (0 to disable)
-ENSEMBLE_WEIGHT   = 0.45   # weight of your custom ONNX model (0 = DeepFace only, 1 = ONNX only)
+LOCAL_RESCUE_GATE = 0.55   # only consult collected_data when the primary model is unsure
+LOCAL_RESCUE_WEIGHT = 0.20  # how much collected_data can adjust the primary prediction
 COLLECT_DATA      = True  # set True to auto-save frames for continual training
 COLLECT_DIR       = "collected_data"
 COLLECT_THRESHOLD = 0.75   # only save frame if confidence > this (high-quality labels)
@@ -180,7 +181,7 @@ class EmotionPipeline:
 
     def __init__(self):
         self.backend     = self._init_backend()
-        self.onnx_model  = self._load_onnx()
+        self.primary_model, self.rescue_model = self._load_onnx_models()
         self.smoother    = FaceSmoother(window=SMOOTH_WINDOW)
         self._frame_no   = 0
 
@@ -190,7 +191,8 @@ class EmotionPipeline:
                 (Path(COLLECT_DIR) / e).mkdir(exist_ok=True)
 
         print(f"[EmoVision] Backend     : {self.backend}")
-        print(f"[EmoVision] ONNX model  : {'yes (ensemble active)' if self.onnx_model else 'none'}")
+        print(f"[EmoVision] ONNX model  : {'yes (primary active)' if self.primary_model else 'none'}")
+        print(f"[EmoVision] Rescue model : {'yes (collected-data fallback)' if self.rescue_model else 'none'}")
         print(f"[EmoVision] Smooth window: {SMOOTH_WINDOW} frames")
         print(f"[EmoVision] Conf gate   : {CONFIDENCE_GATE}")
 
@@ -219,19 +221,41 @@ class EmotionPipeline:
 
         raise RuntimeError("No backend. Install: pip install deepface  OR  pip install fer")
 
-    def _load_onnx(self) -> Optional[OnnxEmotionModel]:
-        """Load fine-tuned ONNX model if it exists."""
-        paths = [
-            Path("models/finetuned_model.onnx"),
+    def _load_onnx_models(self) -> tuple[Optional[OnnxEmotionModel], Optional[OnnxEmotionModel]]:
+        """Load the primary big-data model first, then the collected-data rescue model."""
+        primary_candidates = [
+            Path("models/stage1_bigdata/finetuned_model.onnx"),
             Path("models/emotion_model.onnx"),
         ]
-        for p in paths:
-            if p.exists():
-                try:
-                    return OnnxEmotionModel(str(p))
-                except Exception as e:
-                    print(f"[EmoVision] Could not load ONNX: {e}")
-        return None
+        rescue_candidates = [
+            Path("models/finetuned_model.onnx"),
+        ]
+
+        primary_model = None
+        rescue_model = None
+
+        for path in primary_candidates:
+            if not path.exists():
+                continue
+            try:
+                primary_model = OnnxEmotionModel(str(path))
+                break
+            except Exception as e:
+                print(f"[EmoVision] Could not load primary ONNX ({path}): {e}")
+
+        for path in rescue_candidates:
+            if not path.exists():
+                continue
+            try:
+                rescue_model = OnnxEmotionModel(str(path))
+                break
+            except Exception as e:
+                print(f"[EmoVision] Could not load rescue ONNX ({path}): {e}")
+
+        if primary_model is None and rescue_model is not None:
+            primary_model, rescue_model = rescue_model, None
+
+        return primary_model, rescue_model
 
     # ── Public API ─────────────────────────────────────────────────────────
     def analyze(self, img_bgr: np.ndarray, fast_mode: bool = False) -> list[dict]:
@@ -246,9 +270,9 @@ class EmotionPipeline:
         else:
             raw = self._run_fer(img_bgr)
 
-        # Ensemble with ONNX model if available
-        if self.onnx_model and raw:
-            raw = self._ensemble(img_bgr, raw)
+        # Classify each face with the primary big-data model.
+        if raw:
+            raw = self._classify_faces(img_bgr, raw)
 
         # Temporal smoothing (live mode only — still images skip smoother)
         if fast_mode:
@@ -282,11 +306,6 @@ class EmotionPipeline:
 
             for i, face in enumerate(faces):
                 region     = face.get("region", {})
-                raw_emo    = face.get("emotion", {})
-                total      = float(sum(raw_emo.values())) or 1.0
-                emotions   = {k.lower(): round(float(v) / total, 4) for k, v in raw_emo.items()}
-                dominant   = str(face.get("dominant_emotion", max(emotions, key=emotions.get)))
-                confidence = float(emotions.get(dominant, 0))
 
                 results.append({
                     "face_id": i,
@@ -296,9 +315,9 @@ class EmotionPipeline:
                         "w": int(region.get("w", 0)),
                         "h": int(region.get("h", 0)),
                     },
-                    "emotions":         emotions,
-                    "dominant_emotion": dominant,
-                    "confidence":       round(confidence, 4),
+                    "emotions":         {},
+                    "dominant_emotion": "neutral",
+                    "confidence":       0.0,
                     "color_hex":        FACE_COLORS_HEX[i % len(FACE_COLORS_HEX)],
                 })
         except Exception as e:
@@ -327,11 +346,11 @@ class EmotionPipeline:
             print(f"[FER] {e}")
         return results
 
-    # ── Ensemble ───────────────────────────────────────────────────────────
-    def _ensemble(self, img: np.ndarray, results: list[dict]) -> list[dict]:
+    # ── Classification ────────────────────────────────────────────────────
+    def _classify_faces(self, img: np.ndarray, results: list[dict]) -> list[dict]:
         """
-        For each detected face, run your ONNX model on the crop and
-        blend the two probability distributions with ENSEMBLE_WEIGHT.
+        Run the primary big-data model on every face crop.
+        Only consult collected-data when the primary prediction is uncertain.
         """
         h, w = img.shape[:2]
         for face in results:
@@ -345,35 +364,46 @@ class EmotionPipeline:
                 continue
 
             try:
-                onnx_pred = self.onnx_model.predict(crop)
-                # Weighted blend: (1-w)*deepface + w*onnx
-                for e in EMOTIONS:
-                    base  = face["emotions"].get(e, 0.0)
-                    onnx  = onnx_pred.get(e, 0.0)
-                    face["emotions"][e] = round(
-                        (1 - ENSEMBLE_WEIGHT) * base + ENSEMBLE_WEIGHT * onnx, 4
-                    )
+                primary_probs = self.primary_model.predict(crop) if self.primary_model else {}
+
+                if not primary_probs:
+                    # No ONNX model available; keep the backend output if any.
+                    continue
+
+                primary_dominant = max(primary_probs, key=primary_probs.get)
+                primary_conf = float(primary_probs.get(primary_dominant, 0.0))
+
+                final_probs = primary_probs
+                if self.rescue_model and primary_conf < LOCAL_RESCUE_GATE:
+                    rescue_probs = self.rescue_model.predict(crop)
+                    final_probs = {}
+                    for e in EMOTIONS:
+                        final_probs[e] = round(
+                            (1.0 - LOCAL_RESCUE_WEIGHT) * primary_probs.get(e, 0.0)
+                            + LOCAL_RESCUE_WEIGHT * rescue_probs.get(e, 0.0),
+                            4,
+                        )
+
                 # Renormalize
-                total = sum(face["emotions"].values()) or 1.0
-                face["emotions"] = {k: round(v / total, 4) for k, v in face["emotions"].items()}
+                total = sum(final_probs.values()) or 1.0
+                face["emotions"] = {k: round(v / total, 4) for k, v in final_probs.items()}
                 face["dominant_emotion"] = max(face["emotions"], key=face["emotions"].get)
                 face["confidence"]       = round(face["emotions"][face["dominant_emotion"]], 4)
             except Exception as e:
-                print(f"[Ensemble] {e}")
+                print(f"[Classifier] {e}")
         return results
 
     # ── Confidence gate ────────────────────────────────────────────────────
     def _apply_gate(self, results: list[dict]) -> list[dict]:
         """
         If top emotion probability is below CONFIDENCE_GATE,
-        replace it with 'neutral' (avoids noisy flickering labels).
+        keep the predicted class but mark it as low confidence.
         """
         if CONFIDENCE_GATE <= 0:
             return results
         for face in results:
             if face["confidence"] < CONFIDENCE_GATE:
-                face["dominant_emotion"] = "neutral"
-                face["confidence"]       = round(face["emotions"].get("neutral", 0), 4)
+                face["confidence"] = round(face["confidence"], 4)
         return results
 
     # ── Data collector ─────────────────────────────────────────────────────
@@ -463,9 +493,12 @@ class EmotionPipeline:
         return {
             "backend":    self.backend,
             "detector":   "retinaface" if self.backend == "deepface" else "mtcnn",
-            "classifier": "deepface-emotion" + (" + onnx-ensemble" if self.onnx_model else ""),
+            "classifier": "stage1_bigdata-primary" + (" + collected_data-rescue" if self.rescue_model else ""),
             "emotions":   EMOTIONS,
             "smooth_window":   SMOOTH_WINDOW,
             "confidence_gate": CONFIDENCE_GATE,
-            "ensemble_active": self.onnx_model is not None,
+            "rescue_gate": LOCAL_RESCUE_GATE,
+            "rescue_weight": LOCAL_RESCUE_WEIGHT,
+            "primary_model": bool(self.primary_model),
+            "rescue_model": bool(self.rescue_model),
         }

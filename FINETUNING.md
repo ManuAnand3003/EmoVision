@@ -88,9 +88,10 @@ No manual code changes needed.
 `engine/pipeline.py` automatically loads these in order:
 
 1. `models/finetuned_model.onnx`
-2. `models/emotion_model.onnx`
+2. `models/stage1_bigdata/finetuned_model.onnx`
+3. `models/emotion_model.onnx`
 
-If ONNX is found, it is used in an ensemble with DeepFace.
+The runtime uses the stage-1 big-data model as the primary emotion classifier. The collected-data model only adjusts low-confidence predictions, so the 67-image set cannot dominate the result.
 
 ## 6) Smoke Test
 
@@ -104,6 +105,7 @@ python -c "from fastapi.testclient import TestClient; import main; c=TestClient(
 - If ONNX export fails, confirm `onnxscript` is installed.
 - If collected-data metrics are unstable, add more balanced samples, especially `fear` and `disgust`.
 - Tiny validation sets can give noisy accuracy. Treat stage-2 accuracy as directional, not final.
+- If local accuracy still looks poor, that is expected with a 67-image fine-tune set; the stage-1 + stage-2 ensemble is the practical fix until more data is collected.
 
 ## 8) Privacy and Git
 

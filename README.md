@@ -122,7 +122,7 @@ python finetune_local.py --data collected_data --output models --checkpoint mode
 - Stage 1 validation accuracy: `62.8%` on 5,383 validation images
 - Stage 2 best validation accuracy: `72.7%` on a tiny 11-image validation split
 - API smoke tests passed: `/api/health` and `/api/analyze`
-- Inference pipeline loads ONNX + DeepFace ensemble automatically
+- Inference pipeline now uses the stage1 big-data model as the primary emotion classifier; the collected-data model only rescues low-confidence cases
 
 ### Produced Artifacts
 
