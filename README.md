@@ -98,42 +98,42 @@ Switch in `pipeline.py → _analyze_deepface(fast_mode=True)`.
 
 ---
 
-## 🏋️ Train Your Own Model
+## 🏋️ Two-Stage Training (Validated)
 
-Training a custom EfficientNet-B0 gives you full control over accuracy and which datasets to use.
+This repository now uses a practical two-stage workflow:
 
-### Step 1: Get the data
+1. Stage 1: train on `my_dataset` (large base dataset)
+2. Stage 2: fine-tune on `collected_data` (local adaptation data)
 
-**FER2013** (primary, free on Kaggle):
-```bash
-# Set up Kaggle API first: https://www.kaggle.com/docs/api
-kaggle datasets download -d msambare/fer2013
-unzip fer2013.zip -d data/fer2013/
-```
-
-**RAF-DB** (better quality, optional):
-```
-Register at: http://www.whdeng.cn/RAF/model1.html
-Place in: data/rafdb/
-```
-
-### Step 2: Train
+### Stage 1 — Big Data Training
 
 ```bash
-# FER2013 only
-python training/train.py --data data/fer2013 --epochs 40 --output models/
-
-# FER2013 + RAF-DB combined (better accuracy)
-python training/train.py --data data/fer2013 --rafdb data/rafdb --epochs 50
+python finetune_local.py --data my_dataset --output models/stage1_bigdata --epochs 6 --batch 64 --lr 1e-4 --workers 0
 ```
 
-### Step 3: Use your model
+### Stage 2 — Fine-Tune on Collected Data
 
-The training script automatically:
-1. Saves best checkpoint → `models/best_model.pth`
-2. Exports ONNX → `models/emotion_model.onnx` (for fast inference)
-3. Saves confusion matrix → `models/confusion_matrix.png`
-4. Saves training history → `models/training_history.json`
+```bash
+python finetune_local.py --data collected_data --output models --checkpoint models/stage1_bigdata/finetuned_model.pth --epochs 20 --batch 8 --lr 2e-5 --workers 0
+```
+
+### Latest Run Snapshot (Apr 2026)
+
+- Stage 1 validation accuracy: `62.8%` on 5,383 validation images
+- Stage 2 best validation accuracy: `72.7%` on a tiny 11-image validation split
+- API smoke tests passed: `/api/health` and `/api/analyze`
+- Inference pipeline loads ONNX + DeepFace ensemble automatically
+
+### Produced Artifacts
+
+- `models/stage1_bigdata/finetuned_model.pth`
+- `models/stage1_bigdata/finetuned_model.onnx`
+- `models/finetuned_model.pth`
+- `models/finetuned_model.onnx`
+- `models/finetune_confusion.png`
+- `models/finetune_curves.png`
+
+See `FINETUNING.md` for full details and troubleshooting notes.
 
 ---
 
@@ -171,6 +171,8 @@ railway init && railway up
 | AffectNet | 450,000 images | Very high | Research only |
 
 **Known limitation:** FER2013 has heavy class imbalance (disgust has <5% of samples). The training script uses weighted sampling and loss weighting to compensate.
+
+Privacy note: `collected_data/` is ignored by git to prevent accidental commit of locally collected face images.
 
 ---
 

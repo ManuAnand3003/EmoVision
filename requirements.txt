@@ -21,6 +21,7 @@ torch>=2.2.0                  # comment out if only using deepface
 torchvision>=0.17.0
 onnx>=1.15.0                  # model export
 onnxruntime>=1.17.0           # fast CPU inference
+onnxscript>=0.7.0             # required by torch>=2.6 ONNX exporter
 
 # ── Data & Training Utils ─────────────────────────────────────────────────
 pandas>=2.2.0
@@ -31,3 +32,6 @@ tf-keras>=2.18.0
 
 # ── Kaggle (for downloading datasets) ────────────────────────────────────
 kaggle>=1.6.0                 # pip install kaggle; needs ~/.kaggle/kaggle.json
+
+# ── Testing Helpers (optional) ───────────────────────────────────────────
+httpx>=0.28.0                 # required for FastAPI TestClient

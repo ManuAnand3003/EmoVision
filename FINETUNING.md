@@ -1,169 +1,110 @@
-# 🎯 EmoVision — Fine-Tuning for Indian Faces
+# EmoVision Fine-Tuning Guide
 
-Improving accuracy on Indian faces is straightforward. The base model was trained mostly on
-Western faces from FER2013, so fine-tuning on Indian face data makes a significant difference.
+This project now uses a two-stage training flow:
 
----
+1. Stage 1: train on large dataset (`my_dataset`)
+2. Stage 2: fine-tune on local collected data (`collected_data`)
 
-## Step 1 — Collect Images
+Both stages run through `finetune_local.py` and support GPU automatically.
 
-You need **50–200 images per emotion** (more = better, but 50 works).
-
-### Option A: Use your own photos
-Organize selfies, family photos, etc. with consent:
-```
-my_dataset/
-  happy/     ← smiling photos
-  angry/     ← frowning/irritated expressions
-  sad/       ← sad expressions
-  neutral/   ← neutral/resting face
-  surprise/  ← surprised expressions
-  fear/      ← fearful expressions
-  disgust/   ← disgusted expressions
-```
-
-### Option B: Download from Kaggle (free, diverse)
-```bash
-# RAF-DB has better demographic diversity than FER2013
-kaggle datasets download -d shuvoalok/raf-db
-unzip raf-db.zip -d my_dataset_raw/
-# Then sort into emotion subfolders using the label files
-```
-
-### Option C: AffectNet subset
-Register at: http://mohammadmahoor.com/affectnet/
-Contains ~450K images with better ethnic diversity.
-
-### Tips for Indian face images:
-- Natural lighting works fine — no studio required
-- Include variety: different ages, genders, lighting conditions
-- Even 30-40 images per emotion will show improvement
-- Prioritize emotions that currently perform worst (usually `disgust`, `fear`, `sad`)
-
----
-
-## Step 2 — Run Fine-Tuning
+## 1) Environment Setup
 
 ```bash
-# Activate your venv first
-venv\Scripts\activate   # Windows
-# source venv/bin/activate  # Mac/Linux
-
-# Install training deps if missing
-pip install torch torchvision scikit-learn matplotlib seaborn tqdm
-
-# Run fine-tuning (20 epochs, ~5-15 mins on CPU)
-python finetune_local.py --data my_dataset --output models/ --epochs 20
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
 ```
 
-### Continue from existing checkpoint:
+GPU check:
+
 ```bash
-python finetune_local.py --data my_dataset --output models/ --epochs 15 \
-  --checkpoint models/finetuned_model.pth
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
 ```
 
-### Output files:
-| File | What it is |
-|---|---|
-| `models/finetuned_model.pth` | Fine-tuned PyTorch weights |
-| `models/finetuned_model.onnx` | Fast ONNX version for inference |
-| `models/finetune_confusion.png` | Confusion matrix |
-| `models/finetune_curves.png` | Training/validation loss curves |
+## 2) Dataset Layout
 
----
+Expected structure for both datasets:
 
-## Step 3 — Use the Fine-Tuned Model
-
-Edit `engine/pipeline.py` to load your custom ONNX model.
-
-Add this class after the `EMOTION_META` dict:
-
-```python
-import onnxruntime as ort
-import cv2
-
-class OnnxEmotionModel:
-    """Lightweight ONNX inference — replaces DeepFace for emotion classification."""
-    
-    def __init__(self, model_path: str):
-        self.session = ort.InferenceSession(model_path)
-        self.input_name = self.session.get_inputs()[0].name
-        print(f"[EmoVision] Loaded ONNX model: {model_path}")
-
-    def predict(self, face_bgr: np.ndarray) -> dict:
-        # Preprocess
-        img = cv2.resize(face_bgr, (112, 112))
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        mean = np.array([0.485, 0.456, 0.406])
-        std  = np.array([0.229, 0.224, 0.225])
-        img  = (img - mean) / std
-        img  = img.transpose(2, 0, 1)[np.newaxis]  # HWC → NCHW
-
-        logits = self.session.run(None, {self.input_name: img})[0][0]
-        exp    = np.exp(logits - logits.max())
-        probs  = exp / exp.sum()
-
-        emotions_list = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
-        return {e: round(float(p), 4) for e, p in zip(emotions_list, probs)}
+```text
+<dataset_root>/
+  angry/
+  disgust/
+  fear/
+  happy/
+  neutral/
+  sad/
+  surprise/
 ```
 
-Then in `EmotionPipeline.__init__`, add:
-```python
-# Load custom fine-tuned model if available
-from pathlib import Path
-onnx_path = Path("models/finetuned_model.onnx")
-if onnx_path.exists():
-    self.custom_model = OnnxEmotionModel(str(onnx_path))
-    print("[EmoVision] Custom fine-tuned model loaded — using for emotion classification")
-else:
-    self.custom_model = None
+Current project datasets:
+
+- Big dataset: `my_dataset/` (~35k images)
+- Local adaptation dataset: `collected_data/` (small and imbalanced)
+
+## 3) Stage 1 - Big Dataset Training
+
+```bash
+python finetune_local.py \
+  --data my_dataset \
+  --output models/stage1_bigdata \
+  --epochs 6 \
+  --batch 64 \
+  --lr 1e-4 \
+  --workers 0
 ```
 
-And in `_analyze_deepface`, replace the emotion extraction with:
-```python
-# Use custom model for emotion classification if available
-if self.custom_model and region:
-    x, y, w, h = region.get("x",0), region.get("y",0), region.get("w",0), region.get("h",0)
-    face_crop = img_bgr[max(0,y):y+h, max(0,x):x+w]
-    if face_crop.size > 0:
-        emotions = self.custom_model.predict(face_crop)
-    else:
-        emotions = {k.lower(): round(float(v)/total, 4) for k, v in raw_emotions.items()}
-else:
-    emotions = {k.lower(): round(float(v)/total, 4) for k, v in raw_emotions.items()}
+Outputs:
+
+- `models/stage1_bigdata/finetuned_model.pth`
+- `models/stage1_bigdata/finetuned_model.onnx`
+- `models/stage1_bigdata/finetune_confusion.png`
+- `models/stage1_bigdata/finetune_curves.png`
+
+## 4) Stage 2 - Fine-Tune on Collected Data
+
+```bash
+python finetune_local.py \
+  --data collected_data \
+  --output models \
+  --checkpoint models/stage1_bigdata/finetuned_model.pth \
+  --epochs 20 \
+  --batch 8 \
+  --lr 2e-5 \
+  --workers 0
 ```
 
----
+Outputs:
 
-## Why accuracy is lower on Indian faces
+- `models/finetuned_model.pth`
+- `models/finetuned_model.onnx`
+- `models/finetune_confusion.png`
+- `models/finetune_curves.png`
+- `models/finetune_history.json`
 
-| Cause | Details |
-|---|---|
-| **Training data bias** | FER2013 is ~80% Western/East Asian faces |
-| **Skin tone normalization** | Some models normalize lighting in ways that hurt darker tones |
-| **Expression style** | Subtle cultural differences in how emotions are expressed facially |
-| **Dataset size** | Indian faces are underrepresented even in "diverse" datasets |
+## 5) Inference Integration
 
-Fine-tuning with even 50 images per emotion typically improves accuracy by **10-20 percentage points** on the target demographic.
+No manual code changes needed.
 
----
+`engine/pipeline.py` automatically loads these in order:
 
-## Suggested Improvements Beyond Fine-Tuning
+1. `models/finetuned_model.onnx`
+2. `models/emotion_model.onnx`
 
-1. **Temporal smoothing** — Average predictions across last 5 frames to reduce jitter:
-   ```python
-   from collections import deque
-   emotion_buffer = deque(maxlen=5)
-   emotion_buffer.append(current_emotions)
-   smoothed = {e: np.mean([f[e] for f in emotion_buffer]) for e in emotions}
-   ```
+If ONNX is found, it is used in an ensemble with DeepFace.
 
-2. **Confidence threshold** — Only display prediction if confidence > 55%:
-   ```python
-   if confidence < 0.55:
-       dominant_emotion = "uncertain"
-   ```
+## 6) Smoke Test
 
-3. **Face alignment** — Use facial landmarks to align face before classification (improves accuracy ~3-5%)
+```bash
+python -c "from fastapi.testclient import TestClient; import main; c=TestClient(main.app); print(c.get('/api/health').status_code)"
+```
 
-4. **Ensemble** — Average predictions from DeepFace + your fine-tuned model for better robustness
+## 7) Troubleshooting
+
+- If training hangs on Windows, use `--workers 0`.
+- If ONNX export fails, confirm `onnxscript` is installed.
+- If collected-data metrics are unstable, add more balanced samples, especially `fear` and `disgust`.
+- Tiny validation sets can give noisy accuracy. Treat stage-2 accuracy as directional, not final.
+
+## 8) Privacy and Git
+
+`collected_data/` is now ignored in `.gitignore` so local face data is not committed.

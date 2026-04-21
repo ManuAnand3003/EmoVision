@@ -129,25 +129,7 @@ def build_model(checkpoint: str = None) -> nn.Module:
     """
     model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
 
-    if checkpoint and Path(checkpoint).exists():
-        print(f"  [+] Loading base checkpoint: {checkpoint}")
-        state = torch.load(checkpoint, map_location='cpu')
-        # Try loading — may partially fail if architecture differs (that's OK)
-        try:
-            model.load_state_dict(state, strict=False)
-            print("  [+] Checkpoint loaded successfully")
-        except Exception as e:
-            print(f"  [warn] Partial load: {e}")
-        # Unfreeze everything for fine-tuning
-        for param in model.parameters():
-            param.requires_grad = True
-    else:
-        # Freeze early feature extraction layers
-        for i, block in enumerate(model.features.children()):
-            for param in block.parameters():
-                param.requires_grad = i >= 5  # unfreeze last 3 blocks
-
-    # Replace head
+    # Replace head first so checkpoints from this script align cleanly.
     in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=0.4, inplace=True),
@@ -156,6 +138,30 @@ def build_model(checkpoint: str = None) -> nn.Module:
         nn.Dropout(p=0.3),
         nn.Linear(512, len(EMOTIONS)),
     )
+
+    if checkpoint and Path(checkpoint).exists():
+        print(f"  [+] Loading base checkpoint: {checkpoint}")
+        state = torch.load(checkpoint, map_location='cpu')
+        try:
+            model.load_state_dict(state, strict=False)
+            print("  [+] Checkpoint loaded successfully")
+        except Exception as e:
+            print(f"  [warn] Partial load: {e}")
+
+        # For small adaptation sets, keep most backbone frozen to avoid overfitting/instability.
+        for param in model.parameters():
+            param.requires_grad = False
+        for block in list(model.features.children())[-3:]:
+            for param in block.parameters():
+                param.requires_grad = True
+        for param in model.classifier.parameters():
+            param.requires_grad = True
+    else:
+        # Freeze early feature extraction layers
+        for i, block in enumerate(model.features.children()):
+            for param in block.parameters():
+                param.requires_grad = i >= 5  # unfreeze last 3 blocks
+
     return model
 
 
@@ -238,11 +244,10 @@ def train(args):
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=args.lr, weight_decay=1e-4
     )
-    scheduler = optim.lr_scheduler.OneCycleLR(
-        optimizer, max_lr=args.lr * 10,
-        steps_per_epoch=max(len(train_loader), 1),
-        epochs=args.epochs,
-        pct_start=0.3,
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(args.epochs, 1),
+        eta_min=max(args.lr * 0.1, 1e-7),
     )
 
     # ── Loop ──────────────────────────────────────────────────────────────
@@ -259,13 +264,13 @@ def train(args):
         for imgs, lbls in train_loader:
             imgs, lbls = imgs.to(device), lbls.to(device)
             optimizer.zero_grad()
-            loss = criterion(model(imgs), lbls)
+            outputs = model(imgs)
+            loss = criterion(outputs, lbls)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            scheduler.step()
             tl += loss.item() * imgs.size(0)
-            tc += (model(imgs).argmax(1) == lbls).sum().item()
+            tc += (outputs.argmax(1) == lbls).sum().item()
             tt += imgs.size(0)
 
         # Val
@@ -289,6 +294,8 @@ def train(args):
         marker = ' ✓ best' if va > best_val_acc else ''
         print(f"{epoch:>6}  {tl/tt:>11.4f}  {ta:>10.4f}  {vl/vt:>9.4f}  {va:>9.4f}{marker}")
 
+        scheduler.step()
+
         if va > best_val_acc:
             best_val_acc = va
             torch.save(model.state_dict(), out_dir / 'finetuned_model.pth')
@@ -305,10 +312,17 @@ def train(args):
     print(f"\n  Best val accuracy: {best_val_acc:.4f} ({best_val_acc*100:.1f}%)")
 
     if len(set(trues)) > 1:
-        print("\n" + classification_report(trues, preds, target_names=EMOTIONS, zero_division=0))
+        labels = list(range(len(EMOTIONS)))
+        print("\n" + classification_report(
+            trues,
+            preds,
+            labels=labels,
+            target_names=EMOTIONS,
+            zero_division=0,
+        ))
 
         # Confusion matrix
-        cm = confusion_matrix(trues, preds)
+        cm = confusion_matrix(trues, preds, labels=labels)
         plt.figure(figsize=(8, 6))
         sns.heatmap(cm, annot=True, fmt='d', xticklabels=EMOTIONS, yticklabels=EMOTIONS,
                     cmap='Blues', linewidths=0.5)
@@ -328,19 +342,24 @@ def train(args):
     print(f"  [Saved] finetune_curves.png")
 
     # ── Export ONNX ────────────────────────────────────────────────────────
-    dummy = torch.randn(1, 3, 112, 112).to(device)
-    onnx_path = out_dir / 'finetuned_model.onnx'
-    torch.onnx.export(
-        model, dummy, onnx_path,
-        input_names=['input'], output_names=['logits'],
-        dynamic_axes={'input': {0: 'batch_size'}},
-        opset_version=13,
-    )
-    print(f"  [Saved] finetuned_model.onnx")
+    onnx_saved = False
+    try:
+        dummy = torch.randn(1, 3, 112, 112).to(device)
+        onnx_path = out_dir / 'finetuned_model.onnx'
+        torch.onnx.export(
+            model, dummy, onnx_path,
+            input_names=['input'], output_names=['logits'],
+            dynamic_axes={'input': {0: 'batch_size'}},
+            opset_version=18,
+        )
+        onnx_saved = True
+        print(f"  [Saved] finetuned_model.onnx")
+    except Exception as e:
+        print(f"  [warn] ONNX export failed: {e}")
 
     # ── Save history ───────────────────────────────────────────────────────
     with open(out_dir / 'finetune_history.json', 'w') as f:
-        json.dump({**history, 'best_val_accuracy': best_val_acc}, f, indent=2)
+        json.dump({**history, 'best_val_accuracy': best_val_acc, 'onnx_saved': onnx_saved}, f, indent=2)
 
     print(f"\n✅ Fine-tuning complete!")
     print(f"   Model: {out_dir}/finetuned_model.pth")
